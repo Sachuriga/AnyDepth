@@ -89,7 +89,13 @@ def main():
     parser.add_argument("--fp16", action="store_true", help="run inference in half precision (faster, CUDA only)")
     args = parser.parse_args()
 
-    sys.path.insert(0, os.path.abspath(args.dav2_root))
+    dav2_root = os.path.abspath(args.dav2_root)
+    if not os.path.isfile(os.path.join(dav2_root, "depth_anything_v2", "dinov2.py")):
+        sys.exit(
+            f"Depth-Anything-V2 not found at {dav2_root}\n"
+            "Clone it first: git clone https://github.com/DepthAnything/Depth-Anything-V2"
+        )
+    sys.path.insert(0, dav2_root)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = DAv2SDT(encoder="vitb", fusion_channels=128)
