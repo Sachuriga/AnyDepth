@@ -75,6 +75,40 @@ def colorize(depth, invert, grayscale):
     return cv2.applyColorMap(d, cv2.COLORMAP_INFERNO)
 
 
+def align_to(depth, ref, n_iter=2, keep=0.9):
+    # Robust least-squares fit of depth -> a * depth + b onto ref (removes the per-frame
+    # scale/shift ambiguity of relative depth); the moving animal is dropped as an outlier
+    d = depth[::4, ::4].ravel()
+    r = ref[::4, ::4].ravel()
+    mask = np.ones_like(d, dtype=bool)
+    for _ in range(n_iter):
+        A = np.stack([d[mask], np.ones(mask.sum())], axis=1)
+        (a, b), *_ = np.linalg.lstsq(A, r[mask], rcond=None)
+        resid = np.abs(a * d + b - r)
+        mask = resid <= np.quantile(resid, keep)
+    return a * depth + b
+
+
+def build_background(infer, cap, start, count, n_samples):
+    # Median depth over frames sampled across the clip: the static scene (floor + maze)
+    # without the animal, since it moves
+    positions = np.linspace(start, start + count - 1, num=min(n_samples, count)).astype(int)
+    stack = []
+    for i, pos in enumerate(positions):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(pos))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        stack.append(infer(frame))
+        print(f"\rbackground {i + 1}/{len(positions)}", end="", flush=True)
+    print()
+    background = np.median(np.stack(stack), axis=0)
+    # Second pass: align every sample to the first estimate, then take the median again
+    aligned = [align_to(d, background) for d in stack]
+    background = np.median(np.stack(aligned), axis=0)
+    return background, aligned
+
+
 def main():
     parser = argparse.ArgumentParser(description="AnyDepth (DAv2 + SDT) video depth estimation")
     parser.add_argument("--video", required=True, help="input video path")
@@ -89,6 +123,13 @@ def main():
     parser.add_argument("--fp16", action="store_true", help="run inference in half precision (faster, CUDA only)")
     parser.add_argument("--start-frame", type=int, default=0, help="first frame to process")
     parser.add_argument("--max-frames", type=int, default=None, help="process at most this many frames (for quick tests)")
+    parser.add_argument("--height", action="store_true",
+                        help="subtract a static background so only height above the maze/floor remains (fixed camera only)")
+    parser.add_argument("--bg-frames", type=int, default=100, help="frames sampled to build the background (--height)")
+    parser.add_argument("--min-height", type=float, default=0.02,
+                        help="heights below this are set to 0, as a fraction of the scene depth range (--height)")
+    parser.add_argument("--max-height", type=float, default=None,
+                        help="height mapped to full color, as a fraction of the scene depth range; default: auto (--height)")
     args = parser.parse_args()
 
     dav2_root = os.path.abspath(args.dav2_root)
@@ -126,27 +167,60 @@ def main():
     npy_frames = [] if args.save_npy else None
     use_fp16 = args.fp16 and device == "cuda"
 
+    @torch.inference_mode()
+    def infer(frame):
+        with torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
+            depth = model(preprocess(frame, args.input_size).to(device))
+        depth = F.interpolate(depth[:, None].float(), size=(height, width), mode="bilinear", align_corners=True)
+        return depth[0, 0].cpu().numpy()
+
+    if args.height:
+        background, samples = build_background(infer, cap, args.start_frame, n_frames, args.bg_frames)
+        lo, hi = np.percentile(background, [1, 99])
+        scene_range = hi - lo + 1e-8
+        # The model predicts disparity-like values (larger = nearer); --invert if it predicts depth
+        sign = -1.0 if args.invert else 1.0
+
+        def to_height(depth, aligned=False):
+            d = depth if aligned else align_to(depth, background)
+            h = sign * (d - background) / scene_range
+            h[h < args.min_height] = 0.0
+            return h
+
+        max_height = args.max_height
+        if max_height is None:
+            # Fixed color scale for the whole video, from the animal pixels in the sampled frames
+            heights = np.concatenate([h[h > 0] for h in (to_height(d, aligned=True) for d in samples)] + [np.zeros(1)])
+            max_height = float(np.percentile(heights[heights > 0], 99)) if (heights > 0).any() else 1.0
+        del samples
+        print(f"scene depth range {scene_range:.4g}, min height {args.min_height}, max height {max_height:.4g}")
+        cv2.imwrite(os.path.splitext(out_path)[0] + "_background.png",
+                    colorize(background, args.invert, args.grayscale))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, args.start_frame)
+
     idx = 0
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
-        while args.max_frames is None or idx < args.max_frames:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            x = preprocess(frame, args.input_size).to(device)
-            depth = model(x)
-            depth = F.interpolate(depth[:, None].float(), size=(height, width), mode="bilinear", align_corners=True)
-            depth = depth[0, 0].cpu().numpy()
+    while args.max_frames is None or idx < args.max_frames:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        depth = infer(frame)
 
-            if npy_frames is not None:
-                npy_frames.append(depth.astype(np.float16))
-
+        if args.height:
+            depth = to_height(depth)
+            d = (np.clip(depth / max_height, 0, 1) * 255).astype(np.uint8)
+            vis = cv2.cvtColor(d, cv2.COLOR_GRAY2BGR) if args.grayscale else cv2.applyColorMap(d, cv2.COLORMAP_INFERNO)
+        else:
             vis = colorize(depth, args.invert, args.grayscale)
-            if args.side_by_side:
-                vis = np.concatenate([frame, vis], axis=1)
-            writer.write(vis)
 
-            idx += 1
-            print(f"\r{idx}/{n_frames}", end="", flush=True)
+        if npy_frames is not None:
+            npy_frames.append(depth.astype(np.float16))
+
+        if args.side_by_side:
+            vis = np.concatenate([frame, vis], axis=1)
+        writer.write(vis)
+
+        idx += 1
+        print(f"\r{idx}/{n_frames}", end="", flush=True)
 
     cap.release()
     writer.release()
