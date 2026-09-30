@@ -90,17 +90,17 @@ def align_to(depth, ref, n_iter=2, keep=0.9):
 
 
 def build_background(infer, cap, start, count, n_samples):
-    # Median depth over frames sampled across the clip: the static scene (floor + maze)
-    # without the animal, since it moves
-    positions = np.linspace(start, start + count - 1, num=min(n_samples, count)).astype(int)
+    # Median depth over the first n_samples frames: the static scene (floor + maze)
+    # without the animal, as long as it moves during these frames
+    n = min(n_samples, count)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     stack = []
-    for i, pos in enumerate(positions):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(pos))
+    for i in range(n):
         ok, frame = cap.read()
         if not ok:
-            continue
+            break
         stack.append(infer(frame))
-        print(f"\rbackground {i + 1}/{len(positions)}", end="", flush=True)
+        print(f"\rbackground {i + 1}/{n}", end="", flush=True)
     print()
     background = np.median(np.stack(stack), axis=0)
     # Second pass: align every sample to the first estimate, then take the median again
@@ -125,7 +125,7 @@ def main():
     parser.add_argument("--max-frames", type=int, default=None, help="process at most this many frames (for quick tests)")
     parser.add_argument("--height", action="store_true",
                         help="subtract a static background so only height above the maze/floor remains (fixed camera only)")
-    parser.add_argument("--bg-frames", type=int, default=100, help="frames sampled to build the background (--height)")
+    parser.add_argument("--bg-frames", type=int, default=100, help="first N frames used to build the background (--height)")
     parser.add_argument("--min-height", type=float, default=0.02,
                         help="heights below this are set to 0, as a fraction of the scene depth range (--height)")
     parser.add_argument("--max-height", type=float, default=None,
