@@ -41,6 +41,31 @@ We present **AnyDepth**, a simple and efficient training framework for zero-shot
 
 ![architecture](./assets/anydepth.png)
 
+## 🛠️ Installation
+
+SDT only requires PyTorch. The commands below set up a conda environment with CUDA 12.8 wheels, which are required for RTX 50-series (Blackwell, `sm_120`) GPUs and also work on older GPUs.
+
+```bash
+conda create -n anydepth python=3.14 -y
+conda activate anydepth
+
+# PyTorch with CUDA 12.8 (no separate CUDA Toolkit needed; NVIDIA driver >= R570)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Common utilities for inference and loading weights
+pip install numpy opencv-python pillow matplotlib huggingface_hub
+```
+
+Verify that the GPU is available:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0)); print(torch.cuda.get_arch_list())"
+```
+
+If you get no matching wheel for `torch`, try the `cu129` or `cu130` index instead. If a backbone repository (e.g. Depth Anything 3) does not support Python 3.14 yet, recreate the environment with `python=3.13`.
+
+To use the released weights, also install the corresponding encoder: [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) or [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3).
+
 ## ⚡ Quick Start
 
 SDT has no additional dependencies beyond PyTorch. Simply replace DPT or other decoders with SDT in your existing codebase.

@@ -7,7 +7,7 @@ import logging
 from enum import Enum
 from typing import Sequence, Union
 
-from models.embed import CenterPadding, StretchToMultiple
+from .embed import CenterPadding, StretchToMultiple
 from torch import Tensor, nn
 
 logger = logging.getLogger("fairvit")
