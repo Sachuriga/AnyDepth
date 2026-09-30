@@ -1,0 +1,13 @@
+# Model weights
+*.pth
+*.pt
+*.safetensors
+
+# Third-party repos cloned for inference
+Depth-Anything-V2/
+
+# Outputs
+*_depth.mp4
+*_depth.npy
+
+__pycache__/
