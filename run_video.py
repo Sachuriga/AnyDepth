@@ -87,6 +87,8 @@ def main():
     parser.add_argument("--invert", action="store_true", help="flip near/far colors")
     parser.add_argument("--save-npy", action="store_true", help="also save raw per-frame predictions as .npy")
     parser.add_argument("--fp16", action="store_true", help="run inference in half precision (faster, CUDA only)")
+    parser.add_argument("--start-frame", type=int, default=0, help="first frame to process")
+    parser.add_argument("--max-frames", type=int, default=None, help="process at most this many frames (for quick tests)")
     args = parser.parse_args()
 
     dav2_root = os.path.abspath(args.dav2_root)
@@ -111,6 +113,11 @@ def main():
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if args.start_frame > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, args.start_frame)
+        n_frames = max(n_frames - args.start_frame, 0)
+    if args.max_frames is not None:
+        n_frames = min(n_frames, args.max_frames)
 
     out_path = args.out or os.path.splitext(args.video)[0] + "_depth.mp4"
     out_w = width * 2 if args.side_by_side else width
@@ -121,7 +128,7 @@ def main():
 
     idx = 0
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
-        while True:
+        while args.max_frames is None or idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:
                 break
